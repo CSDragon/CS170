@@ -6,6 +6,7 @@
 #include <ctype.h>
 #include <sys/wait.h>
 #include <string.h>
+#include <signal.h>
 
 
 char* parse(char * lineptr, char **args)
@@ -67,7 +68,8 @@ void execute(char **args,int inPipe, int outPipe, int bgflag)
 
     else if (pid == 0)
     {
-
+        signal(SIGINT, SIG_DFL);
+        signal(SIGTERM, SIG_DFL);
 
         if(inPipe != 0)
             dup2(inPipe,0);
@@ -173,6 +175,9 @@ void run(char * linePtr, int length, int inPipe, int outPipe)
 
 int main(int argc, char *argv[])
 {
+    signal(SIGINT, SIG_IGN);
+    signal(SIGTERM, SIG_IGN);
+    signal(SIGQUIT, SIG_DFL);
     char lineIn[1024];
 
 
