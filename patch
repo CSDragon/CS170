@@ -1,0 +1,137 @@
+diff -ruNp minix_src_clean/include/minix/config.h proj1/include/minix/config.h
+--- minix_src_clean/include/minix/config.h	2013-02-15 03:18:13.000000000 -0800
++++ proj1/include/minix/config.h	2014-04-25 19:06:27.000000000 -0700
+@@ -68,9 +68,9 @@
+ /* Scheduling priorities. Values must start at zero (highest
+  * priority) and increment.
+  */
+-#define NR_SCHED_QUEUES   16	/* MUST equal minimum priority + 1 */
++#define NR_SCHED_QUEUES   18	/* MUST equal minimum priority + 1 */
+ #define TASK_Q		   0	/* highest, used for kernel tasks */
+-#define MAX_USER_Q  	   0    /* highest priority for user processes */   
++#define MAX_USER_Q  	   16    /* highest priority for user processes */
+ #define USER_Q  	  ((MIN_USER_Q - MAX_USER_Q) / 2 + MAX_USER_Q) /* default
+ 						(should correspond to nice 0) */
+ #define MIN_USER_Q	  (NR_SCHED_QUEUES - 1)	/* minimum priority for user
+Binary files minix_src_clean/servers/.DS_Store and proj1/servers/.DS_Store differ
+diff -ruNp minix_src_clean/servers/sched/schedproc.h proj1/servers/sched/schedproc.h
+--- minix_src_clean/servers/sched/schedproc.h	2013-02-15 03:18:14.000000000 -0800
++++ proj1/servers/sched/schedproc.h	2014-04-26 01:15:47.000000000 -0700
+@@ -33,6 +33,9 @@ EXTERN struct schedproc {
+ 	bitchunk_t cpu_mask[BITMAP_CHUNKS(CONFIG_MAX_CPUS)]; /* what CPUs is hte
+ 								process allowed
+ 								to run on */
++    
++    unsigned numTickets;    /* this process's number of lottery tickets */
++
+ } schedproc[NR_PROCS];
+ 
+ /* Flag values */
+diff -ruNp minix_src_clean/servers/sched/schedule.c proj1/servers/sched/schedule.c
+--- minix_src_clean/servers/sched/schedule.c	2013-02-15 03:18:14.000000000 -0800
++++ proj1/servers/sched/schedule.c	2014-04-26 01:15:41.000000000 -0700
+@@ -91,6 +91,10 @@ int do_noquantum(message *m_ptr)
+ {
+ 	register struct schedproc *rmp;
+ 	int rv, proc_nr_n;
++    
++    srandom(time(NULL));    /* Seed a random generator */
++    
++    int randomNum = rand() % maxTickets; /* pull a random number */
+ 
+ 	if (sched_isokendpt(m_ptr->m_source, &proc_nr_n) != OK) {
+ 		printf("SCHED: WARNING: got an invalid endpoint in OOQ msg %u.\n",
+@@ -99,13 +103,23 @@ int do_noquantum(message *m_ptr)
+ 	}
+ 
+ 	rmp = &schedproc[proc_nr_n];
+-	if (rmp->priority < MIN_USER_Q) {
++	
++    if(is_system_proc)  /* Change priority and tickets for user process */
++    {
++        do_nice(rmp);
++        rmp->numTickets = rmp->nice;
++        rmp->priority +=1;
++    }
++    else if (rmp->priority < MAX_USER_Q) {
+ 		rmp->priority += 1; /* lower priority */
+ 	}
+ 
+ 	if ((rv = schedule_process_local(rmp)) != OK) {
+ 		return rv;
+ 	}
++    
++    
++    
+ 	return OK;
+ }
+ 
+@@ -166,6 +180,13 @@ int do_start_scheduling(message *m_ptr)
+ 	if (rmp->max_priority >= NR_SCHED_QUEUES) {
+ 		return EINVAL;
+ 	}
++    
++    
++    rmp->nice           = m_ptr->SCHEDULING_NICE;   /*Set the nice value of the process */
++    
++    rmp->numTickets     = 5;                        /*Set the initial ticket value */
++    
++    
+ 
+ 	/* Inherit current priority and time slice from parent. Since there
+ 	 * is currently only one scheduler scheduling the whole system, this
+@@ -257,7 +278,7 @@ int do_nice(message *m_ptr)
+ {
+ 	struct schedproc *rmp;
+ 	int rv;
+-	int proc_nr_n;
++	int proc_nr_n, oldNice, oldNumTickets;
+ 	unsigned new_q, old_q, old_max_q;
+ 
+ 	/* check who can send you requests */
+@@ -279,15 +300,22 @@ int do_nice(message *m_ptr)
+ 	/* Store old values, in case we need to roll back the changes */
+ 	old_q     = rmp->priority;
+ 	old_max_q = rmp->max_priority;
+-
+-	/* Update the proc entry and reschedule the process */
+-	rmp->max_priority = rmp->priority = new_q;
+-
++    oldNice   = rmp->nice;
++    oldNumTickets = rmp->numTickets;
++    
++    rmp->priority = USER_Q;
++    /* Update nice value */
++    rmp->nice = nice;
++    
++    
++    
+ 	if ((rv = schedule_process_local(rmp)) != OK) {
+ 		/* Something went wrong when rescheduling the process, roll
+ 		 * back the changes to proc struct */
+ 		rmp->priority     = old_q;
+ 		rmp->max_priority = old_max_q;
++        rmp->nice         = oldNice;
++        rmp->numTickets = oldNumTickets;
+ 	}
+ 
+ 	return rv;
+@@ -355,7 +383,7 @@ static void balance_queues(struct timer 
+ 
+ 	for (proc_nr=0, rmp=schedproc; proc_nr < NR_PROCS; proc_nr++, rmp++) {
+ 		if (rmp->flags & IN_USE) {
+-			if (rmp->priority > rmp->max_priority) {
++			if (rmp->priority > rmp->max_priority && is_system_proc(rmp)) {
+ 				rmp->priority -= 1; /* increase priority */
+ 				schedule_process_local(rmp);
+ 			}
+@@ -364,3 +392,9 @@ static void balance_queues(struct timer 
+ 
+ 	set_timer(&sched_timer, balance_timeout, balance_queues, 0);
+ }
++
++/*==================================================================*
++ *          hold_lottery                   *
++ *==================================================================*/
++
++public int hold_lottery()
