@@ -14,6 +14,25 @@ diff -ruNp minix_src_clean/include/minix/config.h proj1/include/minix/config.h
  						(should correspond to nice 0) */
  #define MIN_USER_Q	  (NR_SCHED_QUEUES - 1)	/* minimum priority for user
 Binary files minix_src_clean/servers/.DS_Store and proj1/servers/.DS_Store differ
+diff -ruNp minix_src_clean/servers/pm/schedule.c proj1/servers/pm/schedule.c
+--- minix_src_clean/servers/pm/schedule.c	2013-02-15 03:18:14.000000000 -0800
++++ proj1/servers/pm/schedule.c	2014-04-26 21:32:46.000000000 -0700
+@@ -97,11 +97,15 @@ int sched_nice(struct mproc *rmp, int ni
+ 	 * to a user-space scheduler */
+ 	if (rmp->mp_scheduler == KERNEL || rmp->mp_scheduler == NONE)
+ 		return (EINVAL);
++    
++    
+ 
+ 	if ((rv = nice_to_priority(nice, &maxprio)) != OK) {
+ 		return rv;
+ 	}
+ 
++    maxprio = nice;
++    
+ 	m.SCHEDULING_ENDPOINT	= rmp->mp_endpoint;
+ 	m.SCHEDULING_MAXPRIO	= (int) maxprio;
+ 	if ((rv = _taskcall(rmp->mp_scheduler, SCHEDULING_SET_NICE, &m))) {
 diff -ruNp minix_src_clean/servers/sched/proto.h proj1/servers/sched/proto.h
 --- minix_src_clean/servers/sched/proto.h	2013-02-15 03:18:14.000000000 -0800
 +++ proj1/servers/sched/proto.h	2014-04-26 15:11:20.000000000 -0700
@@ -41,15 +60,21 @@ diff -ruNp minix_src_clean/servers/sched/schedproc.h proj1/servers/sched/schedpr
  /* Flag values */
 diff -ruNp minix_src_clean/servers/sched/schedule.c proj1/servers/sched/schedule.c
 --- minix_src_clean/servers/sched/schedule.c	2013-02-15 03:18:14.000000000 -0800
-+++ proj1/servers/sched/schedule.c	2014-04-26 16:23:13.000000000 -0700
-@@ -11,11 +11,14 @@
++++ proj1/servers/sched/schedule.c	2014-04-26 22:56:59.000000000 -0700
+@@ -8,14 +8,20 @@
+  *   init_scheduling      Called from main.c to set up/prepare scheduling
+  */
+ #include "sched.h"
++#include "stdlib.h"
  #include "schedproc.h"
  #include <assert.h>
  #include <minix/com.h>
 +#include <minix/syslib.h>
  #include <machine/archtypes.h>
-+#include <sys/resource.h>
++#include "sys/resource.h"
  #include "kernel/proc.h" /* for queue constants */
++#include <sys/types.h>
++#include <unistd.h>
  
  static timer_t sched_timer;
  static unsigned balance_timeout;
@@ -57,7 +82,7 @@ diff -ruNp minix_src_clean/servers/sched/schedule.c proj1/servers/sched/schedule
  
  #define BALANCE_TIMEOUT	5 /* how often to balance queues in seconds */
  
-@@ -91,7 +94,8 @@ int do_noquantum(message *m_ptr)
+@@ -91,7 +97,8 @@ int do_noquantum(message *m_ptr)
  {
  	register struct schedproc *rmp;
  	int rv, proc_nr_n;
@@ -67,7 +92,7 @@ diff -ruNp minix_src_clean/servers/sched/schedule.c proj1/servers/sched/schedule
  	if (sched_isokendpt(m_ptr->m_source, &proc_nr_n) != OK) {
  		printf("SCHED: WARNING: got an invalid endpoint in OOQ msg %u.\n",
  		m_ptr->m_source);
-@@ -99,13 +103,23 @@ int do_noquantum(message *m_ptr)
+@@ -99,13 +106,23 @@ int do_noquantum(message *m_ptr)
  	}
  
  	rmp = &schedproc[proc_nr_n];
@@ -92,7 +117,7 @@ diff -ruNp minix_src_clean/servers/sched/schedule.c proj1/servers/sched/schedule
  	return OK;
  }
  
-@@ -166,6 +180,16 @@ int do_start_scheduling(message *m_ptr)
+@@ -166,6 +183,16 @@ int do_start_scheduling(message *m_ptr)
  	if (rmp->max_priority >= NR_SCHED_QUEUES) {
  		return EINVAL;
  	}
@@ -109,7 +134,7 @@ diff -ruNp minix_src_clean/servers/sched/schedule.c proj1/servers/sched/schedule
  
  	/* Inherit current priority and time slice from parent. Since there
  	 * is currently only one scheduler scheduling the whole system, this
-@@ -257,8 +281,9 @@ int do_nice(message *m_ptr)
+@@ -257,8 +284,9 @@ int do_nice(message *m_ptr)
  {
  	struct schedproc *rmp;
  	int rv;
@@ -120,7 +145,7 @@ diff -ruNp minix_src_clean/servers/sched/schedule.c proj1/servers/sched/schedule
  
  	/* check who can send you requests */
  	if (!accept_message(m_ptr))
-@@ -279,15 +304,23 @@ int do_nice(message *m_ptr)
+@@ -279,15 +307,34 @@ int do_nice(message *m_ptr)
  	/* Store old values, in case we need to roll back the changes */
  	old_q     = rmp->priority;
  	old_max_q = rmp->max_priority;
@@ -133,7 +158,18 @@ diff -ruNp minix_src_clean/servers/sched/schedule.c proj1/servers/sched/schedule
 +    
 +    rmp->priority = USER_Q;
 +    /* Update nice value */
-+    rmp->nice = getpriority(PRIO_PROCESS, getpid(rmp));
++    
++    int which = PRIO_PROCESS;
++    id_t pid;
++    int returned;
++    
++    
++    pid = getpid();
++    
++    rmp->numTickets = rmp->nice;
++    
++    schedule_process_local(rmp);
++
 +    //printf("Nice value for %d: %d", rmp->proc_nr, rmp->nice);
 +    
 +    
@@ -148,7 +184,7 @@ diff -ruNp minix_src_clean/servers/sched/schedule.c proj1/servers/sched/schedule
  	}
  
  	return rv;
-@@ -306,6 +339,12 @@ static int schedule_process(struct sched
+@@ -306,6 +353,12 @@ static int schedule_process(struct sched
  	if (flags & SCHEDULE_CHANGE_PRIO)
  		new_prio = rmp->priority;
  	else
@@ -161,7 +197,7 @@ diff -ruNp minix_src_clean/servers/sched/schedule.c proj1/servers/sched/schedule
  		new_prio = -1;
  
  	if (flags & SCHEDULE_CHANGE_QUANTUM)
-@@ -355,7 +394,7 @@ static void balance_queues(struct timer 
+@@ -355,7 +408,7 @@ static void balance_queues(struct timer 
  
  	for (proc_nr=0, rmp=schedproc; proc_nr < NR_PROCS; proc_nr++, rmp++) {
  		if (rmp->flags & IN_USE) {
@@ -170,7 +206,7 @@ diff -ruNp minix_src_clean/servers/sched/schedule.c proj1/servers/sched/schedule
  				rmp->priority -= 1; /* increase priority */
  				schedule_process_local(rmp);
  			}
-@@ -364,3 +403,45 @@ static void balance_queues(struct timer 
+@@ -364,3 +417,45 @@ static void balance_queues(struct timer 
  
  	set_timer(&sched_timer, balance_timeout, balance_queues, 0);
  }
@@ -188,7 +224,7 @@ diff -ruNp minix_src_clean/servers/sched/schedule.c proj1/servers/sched/schedule
 +    
 +    srandom(time(NULL));    /* Seed a random generator */
 +    
-+    randomNum = rand() % maxTickets; /* pull a random number */
++    randomNum = random() % maxTickets; /* pull a random number */
 +    
 +    
 +    
